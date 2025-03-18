@@ -1,0 +1,314 @@
+<!-- File: /Users/shuver/surgical_copilot/web/templates/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Surgical AI Copilot + TTS</title>
+
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/bootstrap.css">
+    <link rel="stylesheet" href="/static/chat.css">
+
+    <!-- Dependencies -->
+    <script src="/static/jquery-3.6.3.min.js"></script>
+    <script src="/static/bootstrap.bundle.min.js"></script>
+
+    <!-- Our scripts -->
+    <script src="/static/websocket.js"></script>
+    <script src="/static/audio.js"></script>
+
+    <style>
+      #chat-history-container {
+        overflow-y: auto;
+        background-color: #2f2f2f;
+        border-radius: 5px;
+        padding: 10px;
+        height: 40vh;
+        margin-bottom: 15px;
+      }
+      .user-message {
+        color: #ffffff;
+        background: #4a4a4a;
+        padding: 5px;
+        border-radius: 5px;
+        margin-bottom: 5px;
+      }
+      .agent-message {
+        color: #ffffff;
+        background: #3a3a3a;
+        padding: 5px;
+        border-radius: 5px;
+        margin-bottom: 5px;
+      }
+      #video-container {
+        margin-bottom: 10px;
+        text-align: center;
+      }
+      /* Just for TTS controls styling */
+      #ttsControls {
+        margin-top: 10px;
+        padding: 8px;
+        background-color: #444;
+        border-radius: 5px;
+      }
+      #ttsControls label {
+        margin-right: 6px;
+      }
+      #ttsApiKey {
+        width: 250px;
+      }
+    </style>
+
+    <script>
+      function onChatMessageKey(event) {
+        if (event.which === 13 && !event.shiftKey) {
+          if (!event.repeat) onChatMessageSubmit();
+          event.preventDefault();
+        }
+      }
+
+      function captureVideoFrame() {
+          const video = document.getElementById('surgery-video');
+          if (!video || video.videoWidth === 0) {
+              console.error("Video not ready or no frames available");
+              return null;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          try {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const dataUrl = canvas.toDataURL('image/jpeg');
+              if (dataUrl.startsWith('data:image/jpeg;base64,')) {
+                  return dataUrl;
+              }
+              return null;
+          } catch (e) {
+              console.error("Error capturing frame:", e);
+              return null;
+          }
+      }
+
+      function onChatMessageSubmit() {
+          const input = document.getElementById('chat-message-input');
+          const text = input.value.trim();
+          if (text.length > 0) {
+              console.log("Sending typed message + captured frame if available...");
+              const frameData = captureVideoFrame();
+              if (frameData) {
+                  sendJSON({ user_input: text, frame_data: frameData });
+              } else {
+                  sendJSON({ user_input: text });
+              }
+              addUserMessage(text);  // immediate local echo
+          }
+          input.value = "";
+      }
+
+      function onChatHistoryReset() {
+        sendJSON({ 'chat_history_reset': true });
+        $('#chat-history-container').empty();
+      }
+
+      function addUserMessage(text) {
+        $('#chat-history-container').append(
+          `<div class="user-message"><b>User:</b> ${escapeHtml(text)}</div>`
+        );
+        scrollChatToBottom();
+      }
+
+      function addAgentMessage(text) {
+        $('#chat-history-container').append(
+          `<div class="agent-message"><b>Agent:</b> ${escapeHtml(text)}</div>`
+        );
+        scrollChatToBottom();
+      }
+
+      function scrollChatToBottom() {
+        const container = document.getElementById('chat-history-container');
+        container.scrollTop = container.scrollHeight;
+      }
+
+      function escapeHtml(str) {
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      async function handleTTS(text) {
+        // 1) Check if user wants TTS
+        const ttsCheckbox = document.getElementById('ttsEnable');
+        const userWantsTTS = ttsCheckbox && ttsCheckbox.checked;
+        if (!userWantsTTS) return;
+
+        // 2) Get the user’s ElevenLabs API key
+        const apiKeyInput = document.getElementById('ttsApiKey');
+        if (!apiKeyInput) return;
+        const apiKey = apiKeyInput.value.trim();
+        if (!apiKey) {
+          console.log("TTS enabled but no API key provided");
+          return;
+        }
+
+        console.log("Sending text to TTS:", text);
+        try {
+          const resp = await fetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text, api_key: apiKey })
+          });
+          if (!resp.ok) {
+            console.error("TTS error:", resp.status, await resp.text());
+            return;
+          }
+          const data = await resp.json();
+          if (data.tts_base64) {
+            console.log("Playing TTS audio from server...");
+            // Create an HTMLAudioElement from base64
+            const audio = new Audio("data:audio/mpeg;base64," + data.tts_base64);
+            audio.play().catch(e => console.error("Audio play error:", e));
+          } else {
+            console.log("No TTS audio in server response");
+          }
+        } catch (err) {
+          console.error("Error calling TTS:", err);
+        }
+      }
+
+      function handleServerMessage(msg) {
+        console.log("handleServerMessage:", msg);
+
+        // If server requests a frame for recognized text
+        if (msg.request_frame && msg.recognized_text) {
+          const frameData = captureVideoFrame();
+          const payload = {
+            user_input: msg.recognized_text,
+            asr_final: true
+          };
+          if (frameData) {
+            payload.frame_data = frameData;
+          }
+          sendJSON(payload);
+          // Also show recognized text as "User" locally
+          addUserMessage(msg.recognized_text);
+          return;
+        }
+
+        // If there's an agent response
+        if (msg.agent_response) {
+          addAgentMessage(msg.agent_response);
+          // ADDED: TTS the agent's response
+          handleTTS(msg.agent_response);
+        }
+
+        if (msg.user_input && msg.asr_final) {
+          addUserMessage(msg.user_input);
+        }
+      }
+
+      async function toggleMic() {
+        const micBtn = document.getElementById("mic-btn");
+        if (!recording) {
+          console.log("Starting recording...");
+          try {
+            await startAudio();
+            micBtn.textContent = "Stop Mic";
+          } catch (err) {
+            console.error("Microphone access error:", err);
+          }
+        } else {
+          console.log("Stopping recording...");
+          stopAudio();
+          micBtn.textContent = "Start Mic";
+        }
+      }
+
+      // Auto-capture a frame for annotation every 10 seconds
+      const AUTO_CAPTURE_INTERVAL_MS = 10000; // 10 seconds; adjust as needed
+      setInterval(() => {
+        const frameData = captureVideoFrame();
+        if (frameData) {
+          console.log("Automatically sending frame data for annotation...");
+          sendJSON({ auto_frame: true, frame_data: frameData });
+        } else {
+          console.log("No frame captured on auto interval.");
+        }
+      }, AUTO_CAPTURE_INTERVAL_MS);
+
+      window.onload = function() {
+        console.log("Connecting to main WebSocket on port 49000...");
+        connectWebsocket(49000, handleServerMessage);
+      };
+    </script>
+</head>
+<body class="bg-dark">
+  <nav class="navbar navbar-dark bg-dark">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="#">Surgical AI Copilot</a>
+      <div class="d-flex">
+        <button class="btn btn-sm btn-outline-light me-2" onclick="onChatHistoryReset()">Reset Chat</button>
+        <button class="btn btn-sm btn-outline-light" data-bs-toggle="modal" data-bs-target="#audioDialog">Audio Settings</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container-fluid mt-3">
+    <div class="row">
+      <div class="col-8">
+        <div id="video-container">
+          <video id="surgery-video" width="960" height="540" controls autoplay muted>
+            <source src="/static/medium_proc.mp4" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+        </div>
+
+        <div id="chat-history-container"></div>
+        <div class="input-group">
+          <textarea id="chat-message-input" class="form-control" rows="3"
+                    placeholder="Type a message..." onkeydown="onChatMessageKey(event)"></textarea>
+          <button class="btn btn-secondary" onclick="onChatMessageSubmit()">Send</button>
+          <button class="btn btn-primary ms-2" id="mic-btn" onclick="toggleMic()">Start Mic</button>
+        </div>
+      </div>
+      <div class="col-4">
+        <h5>Instructions:</h5>
+        <p>
+          1) Click "Start Mic" to record (compressed .webm).<br>
+          2) Speak. Then click "Stop Mic".<br>
+          3) The recognized text and agent's response can be TTS if you enable it below.
+        </p>
+        <!-- TTS controls -->
+        <div id="ttsControls">
+          <label for="ttsEnable">
+            <input type="checkbox" id="ttsEnable">
+            Enable TTS
+          </label>
+          <br>
+          <label for="ttsApiKey">ElevenLabs API Key:</label>
+          <input type="text" id="ttsApiKey" placeholder="Paste your key here">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal fade" id="audioDialog" tabindex="-1" aria-labelledby="audioDialogLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="audioDialogLabel">Audio Settings</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" style="color: #eeeeee;"></button>
+        </div>
+        <div class="modal-body">
+          <p>No custom settings yet.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

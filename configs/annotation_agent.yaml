@@ -1,0 +1,72 @@
+# Copyright (c) MONAI Consortium
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+agent_name: "AnnotationAgent"
+description: "Generates structured annotations in the background every 10s."
+
+max_prompt_tokens: 2048
+ctx_length: 1024
+
+agent_prompt: |
+  You are an annotation agent for a laparoscopic cholecystectomy. Every 10 seconds, produce a JSON output that covers: tool(s), anatomy(ies), and surgical phase.
+  Then add an accurate description of what you see in the scene. There may be more than one tool or anatomy in a scene, or there may be none.
+
+  
+publish:
+  ags:
+    - "response"
+
+annotation_output_dir: annotations
+time_step_seconds: 10
+
+grammar: |
+  {
+    "type": "object",
+    "properties": {
+      "timestamp": { "type": "string" },
+      "elapsed_time_seconds": { "type": "number" },
+      "tools": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["scissors", "hook", "clipper", "grasper", "bipolar", "irrigator", "none"]
+        },
+        "minItems": 0,
+        "uniqueItems": true
+      },
+      "anatomy": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["gallbladder", "cystic_duct", "cystic_artery", "omentum", "liver", "blood_vessel", "abdominal_wall", "peritoneum", "gut", "specimen_bag", "none"]
+        },
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "surgical_phase": {
+        "type": "string",
+        "enum": [
+          "preparation",
+          "calots_triangle_dissection",
+          "clipping_and_cutting",
+          "gallbladder_dissection",
+          "gallbladder_packaging",
+          "cleaning_and_coagulation",
+          "gallbladder_extraction"
+        ]
+      },
+      "description": { "type": "string" }
+    },
+    "required": ["timestamp", "elapsed_time_seconds", "tools", "anatomy", "surgical_phase", "description"]
+  }
+
+model_name: "models/Llama-3.2-11B-lora-surgical-4bit/"
+llm_url: "http://127.0.0.1:8000/v1"
